@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>TP NOTE</title>
+        <style>
+            body {
+                margin : 0px;
+            }
+        </style>
+    </head>
+    <body>
+        <script type="importmap">
+            {
+                "imports": {
+                    "three": "https://unpkg.com/three@v0.149.0/build/three.module.js",
+                    "three/addons/": "https://unpkg.com/three@v0.149.0/examples/jsm/"
+                }
+            }
+        </script>   
+        <script type="module">
+            import * as THREE from 'three';
+            import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+            import Stats from 'three/addons/libs/stats.module.js';
+			import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
+            import { DDSLoader } from 'three/addons/loaders/DDSLoader.js';
+            import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+            import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+            import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+            import { FlyControls } from 'three/addons/controls/FlyControls.js';
+            import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+            import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+            import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+            import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+            import { CopyShader } from 'three/addons/shaders/CopyShader.js';
+            import { HorizontalTiltShiftShader } from 'three/addons/shaders/HorizontalTiltShiftShader.js';
+            import { VerticalTiltShiftShader } from 'three/addons/shaders/VerticalTiltShiftShader.js';
+
+            function onWindowResize() {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize( window.innerWidth, window.innerHeight );
+            }
+            window.addEventListener( 'resize', onWindowResize, false );
+
+            const stats = new Stats() ;
+            document.body.appendChild(stats.dom) ;
+
+            var clock = new THREE.Clock();
+            var requin = undefined;
+            var requinGroup = new THREE.Group();
+            var alguesGroup = new THREE.Group();
+            var rayons = [];
+
+            var scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x016cb2);
+
+            var camera = new THREE.PerspectiveCamera( 45,
+            window.innerWidth/window.innerHeight, 0.1, 10000 );
+            camera.position.set( 0, 50, 50 );
+
+            var renderer = new THREE.WebGLRenderer( {antialias: true} );
+            renderer.setSize( window.innerWidth, window.innerHeight );
+            document.body.appendChild( renderer.domElement );
+
+            var quadJumelles;
+            var jumelles_actives = false;
+            renderer.autoClear = false;
+            var sceneOrtho= new THREE.Scene();
+            var cameraOrtho = new THREE.OrthographicCamera( 0, window.innerWidth, window.innerHeight, 0, 0, 10 );
+            cameraOrtho.position.z = 0;
+            var materialJumelles = new THREE.MeshBasicMaterial( {
+                map: new THREE.TextureLoader().load( "cockpit.png" ),
+                depthTest: false,
+                transparent: true 
+            });
+            quadJumelles = new THREE.Mesh( new THREE.PlaneBufferGeometry( 1, 1 ), materialJumelles );
+            quadJumelles.position.set (window.innerWidth/2,window.innerHeight/2,0);
+            quadJumelles.scale.set( window.innerWidth, window.innerHeight, 1 );
+            sceneOrtho.add( quadJumelles );
+
+            var composer = new EffectComposer(renderer,
+                new THREE.WebGLRenderTarget( window.innerWidth, window.innerHeight ) );
+            var renderPass = new RenderPass(scene, camera);
+            composer.addPass(renderPass);
+            var shaderPass1 = new ShaderPass(HorizontalTiltShiftShader);
+            composer.addPass(shaderPass1);
+            var shaderPass2 = new ShaderPass(VerticalTiltShiftShader);
+            composer.addPass(shaderPass2);
+            shaderPass2.renderToScreen = true; 
+
+            var controls = new OrbitControls( camera, renderer.domElement );
+            controls.target = new THREE.Vector3(0,10,0);
+
+            var gridHelper = new THREE.GridHelper( 200, 10 );
+            scene.add( gridHelper );
+
+            var terrainData = await loadFile();
+            const geometry = new THREE.PlaneGeometry( 200 , 200, terrainData.dimx - 1, terrainData.dimz - 1 );
+            geometry.rotateX( - Math.PI / 2 );
+            const vertices = geometry.attributes.position.array;
+            let altitudes = terrainData.altitudes;
+            let j = 0;
+            for ( let i = 0, j = 0, l = vertices.length; i < l; i ++, j += 3 ) {
+                vertices[ j + 1 ] = altitudes[ i ];
+            }
+            var texture = new THREE.TextureLoader().load('sable.jpg');
+            texture.wrapS = THREE.RepeatWrapping;
+            texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set( 5, 5 );
+
+            var mesh_terrain = new THREE.Mesh( geometry, new THREE.MeshLambertMaterial( { map: texture } ) );
+            geometry.computeVertexNormals();
+
+            scene.add(mesh_terrain);
+
+            var light1 = new THREE.DirectionalLight( 0x999999 );
+            light1.position.set( 1, 1, 1 );
+            scene.add( light1 );
+            var light2 = new THREE.AmbientLight( 0x555555 );
+            scene.add( light2 );
+            var light3 = new THREE.PointLight( 0x999999, 10, 40);
+            light3.position.set( 0, 12, 0 );
+            scene.add( light3 );
+
+            var fog = new THREE.Fog( 0x016cb2, 2, 120 );
+            scene.fog = fog;
+
+            await loadObj();
+            await creationAlgues(100, terrainData);
+            await loadShark();
+            await creationRequins(10, 0, 100, 7, 100);
+
+            async function loadFile() {
+                const loader = new THREE.FileLoader();
+                try {
+                    const data = await loader.loadAsync('./terrain.json');
+                    return JSON.parse(data);
+                } catch (error) {
+                    console.error('Erreur lors du chargement du fichier JSON :', error);
+                    throw error;
+                }
+            }
+
+            async function loadShark(){
+                let mtlLoader = new MTLLoader();
+                mtlLoader.setPath('./requin/');
+                mtlLoader.load( "requin.mtl", function( materials ) {
+                    materials.preload();
+                    let objLoader = new OBJLoader();
+                    objLoader.setMaterials( materials );
+                    objLoader.setPath( './requin/' );
+                    objLoader.load( 'requin.obj', function ( object ) {
+                        object.position.set(0, 15, 0);
+                        object.scale.set(1, 1, 1);
+                        requin = object;
+                        scene.add( requin );
+                    },function ( xhr ) {
+                        console.log( ( xhr.loaded / xhr.total * 100 ) + '% loaded' );
+                    },
+                    function ( error ) {
+                        console.error( "Erreur de chargement" );
+                    } );
+                });
+            }
+
+            async function loadObj(){
+                let mtlLoader = new MTLLoader();
+                mtlLoader.setPath('./tresor/');
+                mtlLoader.load( "tresor.mtl", function( materials ) {
+                    materials.preload();
+                    let objLoader = new OBJLoader();
+                    objLoader.setMaterials( materials );
+                    objLoader.setPath( './tresor/' );
+                    objLoader.load( 'tresor.obj', function ( object ) {
+                        object.position.set(0, 9, 0);
+                        object.scale.set(10, 10, 10);
+                        scene.add( object );
+                    },function ( xhr ) {
+                        console.log( ( xhr.loaded / xhr.total * 100 ) + '% loaded' );
+                    },
+                    function ( error ) {
+                        console.error( "Erreur de chargement" );
+                    } );
+                });
+            }
+
+            async function creationRequins(nb, rayon_min, rayon_max, hauteur_min, hauteur_max){
+                let mtlLoader = new MTLLoader();
+                mtlLoader.setPath('./requin/');
+                mtlLoader.load( "requin.mtl", function( materials ) {
+                    materials.preload();
+                    let objLoader = new OBJLoader();
+                    objLoader.setMaterials( materials );
+                    objLoader.setPath( './requin/' );
+                    objLoader.load( 'requin.obj', function ( object ) {
+                        for (let i = 0; i < nb; i++){
+                            let objet_clone = object.clone();
+                            objet_clone.position.x = THREE.MathUtils.randFloat( -100.0, 100.0 );
+                            objet_clone.position.z = THREE.MathUtils.randFloat( -100.0, 100.0 );
+                            objet_clone.position.y = THREE.MathUtils.randFloat( hauteur_min, hauteur_max );
+                            objet_clone.rotation.y = THREE.MathUtils.randFloat( 0.0, 2 * Math.PI );
+                            let scale = THREE.MathUtils.randFloat( 0.2, 1.0 );
+                            objet_clone.scale.x = scale;
+                            objet_clone.scale.y = scale;
+                            objet_clone.scale.z = scale;
+                            let temp = THREE.MathUtils.randFloat( rayon_min, rayon_max );
+                            rayons.push(temp);
+                            requinGroup.add( objet_clone );
+                        }
+                        scene.add(requinGroup);
+                    },function ( xhr ) {
+                        console.log( ( xhr.loaded / xhr.total * 100 ) + '% loaded' );
+                    },
+                    function ( error ) {
+                        console.error( "Erreur de chargement" );
+                    } );
+                });
+            }
+
+            async function creationAlgues(nb, terrain){
+                let mtlLoader = new MTLLoader();
+                mtlLoader.setPath('./algue/');
+                mtlLoader.load( "algue.mtl", function( materials ) {
+                    materials.preload();
+                    let objLoader = new OBJLoader();
+                    objLoader.setMaterials( materials );
+                    objLoader.setPath( './algue/' );
+                    objLoader.load( 'algue.obj', function ( object ) {
+                        console.log(object)
+                        for (let i = 0; i < nb; i++){
+                            let objet_clone = object.clone();
+                            objet_clone.position.x = THREE.MathUtils.randFloat( -100.0, 100.0 );
+                            objet_clone.position.z = THREE.MathUtils.randFloat( -100.0, 100.0 );
+
+                            let raycaster = new THREE.Raycaster();
+                            raycaster.set(new THREE.Vector3(objet_clone.position.x, 100, objet_clone.position.z), new THREE.Vector3(0, -1, 0));
+                            let intersects = raycaster.intersectObject(mesh_terrain);
+                            if (intersects.length > 0) {
+                                objet_clone.position.y = intersects[0].point.y;
+                            }
+                            objet_clone.rotation.y = THREE.MathUtils.randFloat( 0.0, 2 * Math.PI );
+                            let scale = THREE.MathUtils.randFloat( 0.0, 10.0 );
+                            objet_clone.scale.x = scale;
+                            objet_clone.scale.y = scale;
+                            objet_clone.scale.z = scale;
+                            alguesGroup.add( objet_clone );
+                        }
+                        scene.add(alguesGroup);
+                    },function ( xhr ) {
+                        console.log( ( xhr.loaded / xhr.total * 100 ) + '% loaded' );
+                    },
+                    function ( error ) {
+                        console.error( "Erreur de chargement" );
+                    } );
+                });
+            }
+
+
+            function animate(temps) {
+                controls.update();
+                renderer.render( scene, camera );
+                // Animer la scène
+                var dt = clock.getDelta();
+                var t = temps/1000;
+                if(requin != undefined){
+                    requin.position.x = 30 * Math.cos(t);
+                    requin.position.z = 30 * Math.sin(t);
+                    requin.rotation.y = -t;
+                }
+                if(alguesGroup != undefined){
+                    alguesGroup.children.forEach(mesh => {
+                        mesh.rotation.y += 0.1*Math.cos(t);
+                    });
+                }
+                //console.log(rayons.length)
+                if(requinGroup != undefined && rayons.length > 0){
+                    requinGroup.children.forEach((mesh, index) => {
+                        let r = rayons[index];
+                        mesh.position.x = r * Math.cos(t);
+                        mesh.position.z = r * Math.sin(t);
+                /*         if (r < 0) mesh.rotation.y = -t;
+                        else mesh.rotation.y = -t; */
+                        mesh.rotation.y = -t;
+                    });
+                }
+
+                if(jumelles_actives){
+                    composer.render();
+                    renderer.render( sceneOrtho, cameraOrtho )
+                }
+                    
+                else
+                    renderer.render( scene, camera );
+                stats.update();
+                requestAnimationFrame( animate );
+            };
+            requestAnimationFrame( animate );
+
+            var elem = document.documentElement;
+
+            function openFullscreen() {
+                if (elem.requestFullscreen) {
+                    elem.requestFullscreen();
+                } else if (elem.webkitRequestFullscreen) { /* Safari */
+                    elem.webkitRequestFullscreen();
+                } else if (elem.msRequestFullscreen) { /* IE11 */
+                    elem.msRequestFullscreen();
+                }
+                jumelles_actives = true;
+            }
+
+            function closeFullscreen() {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) { /* Safari */
+                    document.webkitExitFullscreen();
+                } else if (document.msExitFullscreen) { /* IE11 */
+                    document.msExitFullscreen();
+                }
+                jumelles_actives = false;
+            }
+
+            window.addEventListener("keydown", function (event) {
+                switch (event.key) {
+                    case "c":
+                        if(jumelles_actives)
+                            closeFullscreen();
+                        else
+                            openFullscreen();
+                        break;
+                    case "Escape":
+                        closeFullscreen();
+                        break;
+                    default:
+                        return;
+                }
+                event.preventDefault(); // Pour que d'autres fonctions puissent traiter la touche
+            }, true);
+        </script>
+    </body>
+</html>
